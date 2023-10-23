@@ -112,12 +112,13 @@ WHITESPACE            [ \f\r\t\v]
 
 {INLINE_COMMENT}                        { curr_lineno++; }
 
-{NESTED_COMMENT_CLOSE}                  { cool_yylval.error_msg = "Unmatched *)"; return ERROR; }
 {NESTED_COMMENT_OPEN}                   { commentDepth++; BEGIN NESTED_COMMENT; }
+<NESTED_COMMENT>{NESTED_COMMENT_OPEN}   { commentDepth++; }
 <NESTED_COMMENT><<EOF>>                 { BEGIN(INITIAL); cool_yylval.error_msg = "EOF in comment"; return ERROR; }
 <NESTED_COMMENT>\n                      { curr_lineno++; }
-<NESTED_COMMENT>([^*]|(\*+[^)*]))+      { }
 <NESTED_COMMENT>{NESTED_COMMENT_CLOSE}  { commentDepth--; if(commentDepth == 0) BEGIN 0; }
+<NESTED_COMMENT>.                       { }
+{NESTED_COMMENT_CLOSE}                  { cool_yylval.error_msg = "Unmatched *)"; return ERROR; }
 
 \" {
     BEGIN(STRING);
