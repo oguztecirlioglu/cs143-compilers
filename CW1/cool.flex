@@ -46,19 +46,26 @@ extern YYSTYPE cool_yylval;
 int char_count = 0;
 int commentDepth = 0;
 
+char str_buf[MAX_STR_CONST]; /* to assemble string constants */
+char *str_buf_ptr;
+
+bool max_strlen_check();
+bool max_strlen_check(int);
+int max_strlen_err();
+void clean_str();
+
 %}
 
 /*
  * Define names for regular expressions here.
  */
 
-%Start NESTED_COMMENT INLINE_COMMENT
+%x NESTED_COMMENT STRING
 
-INLINE_COMMENT        --
+INLINE_COMMENT        --.*\n
 NESTED_COMMENT_OPEN   \(\*
 NESTED_COMMENT_CLOSE  \*\)
 
-DARROW                =>
 DIGIT                 [0-9]
 CLASS                 (?i:class)
 ELSE                  (?i:else)
@@ -80,34 +87,92 @@ NOT                   (?i:not)
 TRUE                  t(?i:rue)
 FALSE                 f(?i:alse)
 
+TYPE_ID               [A-Z][a-zA-Z0-9_]*
+OBJECT_ID             [a-z][a-zA-Z0-9_]*
+
+ASSIGNMENT            "<-"
+DARROW                "=>"
+LE                    "<="
+
+
 WHITESPACE            [ \f\r\t\v]
 
 
 %%
 
  /*
-  *  Notes to self:
-  *  Class names begin with uppercase chars.
-  *  Type declaration is of form x:C, where x is a variable and C is a type.
-  *  An attribute has the form: <id> : <type> [ <- <expr> ]
-  *  Variables of the basic classes Int, Bool, and String are initialized specially; see Section 8.
-  *  Void is used for variables where no initialisation occurs and isnt a simple type (mentioned above). 
-  *
-  *  The lexical units of Cool are integers, type identifiers, object identifiers, special notation, strings, keywords, and white space
+  Notes to self:
+  Variables of the basic classes Int, Bool, and String are initialized specially; see Section 8.
+  Void is used for variables where no initialisation occurs and isnt a simple type (mentioned above). 
+
+  The lexical units of Cool are integers, type identifiers, object identifiers, special notation, strings, keywords, and white space
+  Need to add edge cases for terminating in middle of string etc, AND make "\n" into one char.
   */
 
- /*
-  *  The multiple-character operators.
-  */
 
-{INLINE_COMMENT}                        { cout << "open inline comment" << endl; BEGIN INLINE_COMMENT; }
-<INLINE_COMMENT>\n                      { cout << "close inline comment" << endl; BEGIN 0;}
-<INLINE_COMMENT>.+                      { }
+{INLINE_COMMENT}                        { curr_lineno++; }
 
-{NESTED_COMMENT_OPEN}                   { cout << "open nested comment" << endl; commentDepth++; BEGIN NESTED_COMMENT; }
+{NESTED_COMMENT_CLOSE}                  { cool_yylval.error_msg = "Unmatched *)"; return ERROR; }
+{NESTED_COMMENT_OPEN}                   { commentDepth++; BEGIN NESTED_COMMENT; }
+<NESTED_COMMENT><<EOF>>                 { BEGIN(INITIAL); cool_yylval.error_msg = "EOF in comment"; return ERROR; }
+<NESTED_COMMENT>\n                      { curr_lineno++; }
 <NESTED_COMMENT>([^*]|(\*+[^)*]))+      { }
-<NESTED_COMMENT>{NESTED_COMMENT_CLOSE}  { cout << "close nested comment" << endl; commentDepth--; if(commentDepth == 0) BEGIN 0; }
+<NESTED_COMMENT>{NESTED_COMMENT_CLOSE}  { commentDepth--; if(commentDepth == 0) BEGIN 0; }
 
+\" {
+    BEGIN(STRING);
+    str_buf_ptr = str_buf;
+}
+<STRING>\" {
+    BEGIN(INITIAL);
+    if (max_strlen_check()) return max_strlen_err();
+    str_buf_ptr = 0;
+    cool_yylval.symbol = stringtable.add_string(str_buf);
+    clean_str();
+    return STR_CONST;
+}
+<STRING><<EOF>> {
+    BEGIN(0);
+    cool_yylval.error_msg = "EOF in string constant";
+    return ERROR;
+}
+<STRING>\\\n { curr_lineno++; }
+<STRING>\n {
+    BEGIN(0);
+    curr_lineno++;
+    BEGIN(INITIAL);
+    cool_yylval.error_msg = "Unterminated string constant";
+    return ERROR;
+}
+<STRING>\0 {
+    BEGIN(0);
+    cool_yylval.error_msg = "String contains null character";
+    return ERROR;
+}
+<STRING>\\[^ntbf] {
+    if (max_strlen_check()) return max_strlen_check();
+    *str_buf_ptr++ = yytext[1];
+}
+<STRING>\\[n] {
+    if (max_strlen_check()) return max_strlen_check();
+    *str_buf_ptr++ = '\n';
+}
+<STRING>\\[t] {
+    if (max_strlen_check()) return max_strlen_check();
+    *str_buf_ptr++ = '\t';
+}
+<STRING>\\[b] {
+    if (max_strlen_check()) return max_strlen_check();
+    *str_buf_ptr++ = '\b';
+}
+<STRING>\\[f] {
+    if (max_strlen_check()) return max_strlen_check();
+    *str_buf_ptr++ = '\f';
+}
+<STRING>. {
+    if (max_strlen_check()) return max_strlen_err();
+    *str_buf_ptr++ = *yytext;
+}
 
 {CLASS}                                 { return (CLASS); }
 {ELSE}                                  { return (ELSE); }
@@ -127,15 +192,44 @@ WHITESPACE            [ \f\r\t\v]
 {OF}                                    { return (OF); }
 {NOT}                                   { return (NOT); }
 
-{TRUE}                                  { cout << "matched true" << endl; }
-{FALSE}                                 { cout << "matched false" << endl; }
+{TRUE}                                  { cool_yylval.boolean = true; return (BOOL_CONST); }
+{FALSE}                                 { cool_yylval.boolean = false; return (BOOL_CONST); }
 
 {DIGIT}+                                { cool_yylval.symbol = inttable.add_string(yytext); return (INT_CONST); }
-{DARROW}		                            { return (DARROW); }
 
-{WHITESPACE}+                           { }
+{DARROW}		                            { return (DARROW); }
+{LE}                                    { return (LE); }
+{ASSIGNMENT}                            { return (ASSIGN); }
+
+"{"                                     { return (int('{')); }
+"}"                                     { return (int('}')); }
+"("                                     { return (int('(')); }
+")"                                     { return (int(')')); }
+";"                                     { return (int(';')); }
+":"                                     { return (int(':')); }
+","                                     { return (int(',')); }
+"="                                     { return (int('=')); }
+"<"                                     { return (int('<')); }
+"."                                     { return (int('.')); }
+"@"                                     { return (int('@')); }
+"+"                                     { return (int('+')); }
+"-"                                     { return (int('-')); }
+"*"                                     { return (int('*')); }
+"/"                                     { return (int('/')); }
+"~"                                     { return (int('~')); }
+
+{TYPE_ID}                               { cool_yylval.symbol = idtable.add_string(yytext); return (TYPEID); }
+{OBJECT_ID}                             { cool_yylval.symbol = idtable.add_string(yytext); return (OBJECTID); }
+
+
+ /*
+ * {ERROR}
+ * {LET_STMT}
+ */
+
 \n                                      { curr_lineno++; }
-.                                       { char_count++; }
+{WHITESPACE}+                           { }
+.                                       { cool_yylval.error_msg = strdup(yytext); return (ERROR); }
 
 
  /*
@@ -153,3 +247,21 @@ WHITESPACE            [ \f\r\t\v]
 
 
 %%
+
+bool max_strlen_check() { 
+    return (str_buf_ptr - str_buf) + 1 > MAX_STR_CONST; 
+}
+
+bool max_strlen_check(int size) {
+    return (str_buf_ptr - str_buf) + size > MAX_STR_CONST;
+}
+
+void clean_str() {
+  memset(str_buf, 0, MAX_STR_CONST * sizeof(char));
+}
+
+int max_strlen_err() { 
+    BEGIN(INITIAL);
+    cool_yylval.error_msg = "String constant too long";
+    return ERROR;
+}
