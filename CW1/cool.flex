@@ -60,9 +60,9 @@ void clean_str();
  * Define names for regular expressions here.
  */
 
-%x NESTED_COMMENT STRING
+%x NESTED_COMMENT STRING STRING_ERR INLINE_COMMENT
 
-INLINE_COMMENT        --.*\n
+INLINE_COMMENT        --
 NESTED_COMMENT_OPEN   \(\*
 NESTED_COMMENT_CLOSE  \*\)
 
@@ -110,7 +110,9 @@ WHITESPACE            [ \f\r\t\v]
   */
 
 
-{INLINE_COMMENT}                        { curr_lineno++; }
+{INLINE_COMMENT}                        { BEGIN(INLINE_COMMENT); }
+<INLINE_COMMENT>.+                      { }
+<INLINE_COMMENT>\n                       { BEGIN(0); curr_lineno++; }
 
 {NESTED_COMMENT_OPEN}                   { commentDepth++; BEGIN NESTED_COMMENT; }
 <NESTED_COMMENT>{NESTED_COMMENT_OPEN}   { commentDepth++; }
@@ -122,6 +124,7 @@ WHITESPACE            [ \f\r\t\v]
 
 \" {
     BEGIN(STRING);
+    clean_str();
     str_buf_ptr = str_buf;
 }
 <STRING>\" {
@@ -129,7 +132,6 @@ WHITESPACE            [ \f\r\t\v]
     if (max_strlen_check()) return max_strlen_err();
     str_buf_ptr = 0;
     cool_yylval.symbol = stringtable.add_string(str_buf);
-    clean_str();
     return STR_CONST;
 }
 <STRING><<EOF>> {
@@ -137,22 +139,27 @@ WHITESPACE            [ \f\r\t\v]
     cool_yylval.error_msg = "EOF in string constant";
     return ERROR;
 }
-<STRING>\\\n { curr_lineno++; }
 <STRING>\n {
     BEGIN(0);
     curr_lineno++;
-    BEGIN(INITIAL);
     cool_yylval.error_msg = "Unterminated string constant";
     return ERROR;
 }
-<STRING>\0 {
-    BEGIN(0);
+<STRING>\\[^ntbf\0] {
+    if (max_strlen_check()) return max_strlen_check();
+    *str_buf_ptr++ = yytext[1];
+}
+<STRING>\\[\0] {
+    BEGIN(STRING_ERR);
+    curr_lineno++;
     cool_yylval.error_msg = "String contains null character";
     return ERROR;
 }
-<STRING>\\[^ntbf] {
-    if (max_strlen_check()) return max_strlen_check();
-    *str_buf_ptr++ = yytext[1];
+<STRING>\0 {
+    BEGIN(STRING_ERR);
+    curr_lineno++;
+    cool_yylval.error_msg = "String contains null character";
+    return ERROR;
 }
 <STRING>\\[n] {
     if (max_strlen_check()) return max_strlen_check();
@@ -174,6 +181,19 @@ WHITESPACE            [ \f\r\t\v]
     if (max_strlen_check()) return max_strlen_err();
     *str_buf_ptr++ = *yytext;
 }
+
+<STRING_ERR>\"  {
+                    BEGIN(INITIAL);
+	            }
+<STRING_ERR>\\\n {
+	                curr_lineno++;
+                    BEGIN(INITIAL);
+                }
+<STRING_ERR>\n  {
+	                curr_lineno++;
+                    BEGIN(INITIAL);
+	            }
+<STRING_ERR>.   {}
 
 {CLASS}                                 { return (CLASS); }
 {ELSE}                                  { return (ELSE); }
